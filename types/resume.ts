@@ -1,5 +1,5 @@
 export type Locale = "en" | "ro" | "hu";
-export type TemplateId = "modern" | "professional" | "minimal" | "developer" | "executive" | "creative" | "compact" | "ats";
+export type TemplateId = "modern" | "professional" | "minimal" | "developer" | "executive" | "creative" | "compact" | "ats" | "sidebar" | "bold" | "elegant" | "timeline" | "studio" | "geometric" | "nordic" | "corporate";
 
 export interface ProfileImageSettings {
   zoom: number;

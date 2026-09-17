@@ -1,31 +1,10 @@
 "use client";
 
 import { useState } from "react";
-import { Code2, Globe, Link, Mail, MapPin, Phone } from "lucide-react";
-import type { ResumeDocument, TemplateId } from "@/types/resume";
+import { Code2, Globe, Link, Mail, MapPin, Phone, UserRound } from "lucide-react";
+import type { ResumeDocument } from "@/types/resume";
 import { sectionLabels } from "@/lib/i18n";
-
-export const templateNames: Record<TemplateId, string> = {
-  modern: "Modern",
-  professional: "Professional",
-  minimal: "Minimal",
-  developer: "Developer",
-  executive: "Executive",
-  creative: "Creative",
-  compact: "Compact",
-  ats: "ATS Classic",
-};
-
-export const templateSupportsPhoto: Record<TemplateId, boolean> = {
-  modern: true,
-  professional: true,
-  minimal: false,
-  developer: false,
-  executive: true,
-  creative: true,
-  compact: false,
-  ats: false,
-};
+import { templateSupportsPhoto } from "@/lib/template-catalog";
 
 const defaultPhotoSettings = { zoom: 1, offsetX: 0, offsetY: 0, rotation: 0 };
 
@@ -54,6 +33,13 @@ function ProfilePhoto({src,alt,size,shape,settings}:{src:string;alt:string;size:
       onLoad={event=>setAspectRatio(event.currentTarget.naturalWidth/event.currentTarget.naturalHeight)}
       style={{position:"absolute",display:"block",left:`calc(50% + ${settings.offsetX}%)`,top:`calc(50% + ${settings.offsetY}%)`,width:`${geometry.imageWidth}%`,height:`${geometry.imageHeight}%`,maxWidth:"none",objectFit:"fill",transformOrigin:"center",transform:`translate(-50%, -50%) rotate(${settings.rotation}deg)`,pointerEvents:"none"}}
     />
+  </span>;
+}
+
+function ProfilePhotoPlaceholder({size,shape}:{size:number;shape:ResumeDocument["theme"]["photoShape"]}) {
+  const borderRadius=shape==="circle"?"50%":shape==="rounded"?"16px":"0";
+  return <span className={`profile-photo-frame profile-photo-placeholder shape-${shape}`} style={{width:`${size}px`,height:`${size}px`,borderRadius}} role="img" aria-label="Profile photo placeholder">
+    <UserRound aria-hidden="true" />
   </span>;
 }
 
@@ -96,10 +82,12 @@ export function TemplateView({
   resume,
   previewId,
   previewPlaceholder = false,
+  showPhotoPlaceholder = true,
 }: {
   resume: ResumeDocument;
   previewId?: string;
   previewPlaceholder?: boolean;
+  showPhotoPlaceholder?: boolean;
 }) {
   const { data, theme, cvLanguage, template } = resume;
   const labels = sectionLabels[cvLanguage];
@@ -129,22 +117,29 @@ export function TemplateView({
     references: data.references.length > 0 && <Section title={labels.references}>{data.references.map((item) => <p key={item.id}><strong>{item.name}</strong> · {item.role}, {item.company}</p>)}</Section>,
   };
 
-  const sideKeys = template === "developer" ? ["skills", "projects", "languages"] : ["skills", "languages", "education"];
-  const isTwoColumn = ["modern", "creative", "developer"].includes(template);
+  const sideKeys = template === "developer"
+    ? ["skills", "projects", "languages"]
+    : template === "studio"
+      ? ["skills", "languages", "interests"]
+      : ["skills", "languages", "education"];
+  const isTwoColumn = ["modern", "creative", "developer", "sidebar", "studio", "corporate"].includes(template);
   const photoSettings = data.personal.profileImageSettings ?? defaultPhotoSettings;
-  const photoVisible = Boolean(data.personal.profileImage && templateSupportsPhoto[template]);
-  const photoSize = template === "creative" ? 140 : 92;
-  const profilePhoto = photoVisible ? (
-    <ProfilePhoto src={data.personal.profileImage!} alt={`${data.personal.firstName} ${data.personal.lastName}`.trim() || "Profile"} size={photoSize} shape={theme.photoShape} settings={photoSettings}/>
+  const photoSize = ["creative", "studio"].includes(template) ? 140 : template === "sidebar" ? 112 : ["bold", "elegant", "geometric"].includes(template) ? 104 : 92;
+  const canShowPhoto = templateSupportsPhoto[template];
+  const profilePhoto = data.personal.profileImage && canShowPhoto ? (
+    <ProfilePhoto src={data.personal.profileImage} alt={`${data.personal.firstName} ${data.personal.lastName}`.trim() || "Profile"} size={photoSize} shape={theme.photoShape} settings={photoSettings}/>
+  ) : canShowPhoto && showPhotoPlaceholder ? (
+    <ProfilePhotoPlaceholder size={photoSize} shape={theme.photoShape}/>
   ) : null;
-  const hasHeaderContent = Boolean(profilePhoto || data.personal.firstName || data.personal.lastName || data.personal.title);
-  const renderHeader = (showPhoto = true) => hasHeaderContent ? (
+  const hasIdentity = Boolean(data.personal.firstName || data.personal.lastName || data.personal.title);
+  const hasHeaderContent = Boolean(profilePhoto || hasIdentity);
+  const renderHeader = ({showPhoto=true,showIdentity=true}:{showPhoto?:boolean;showIdentity?:boolean}={}) => (showPhoto&&profilePhoto)|| (showIdentity&&hasIdentity) ? (
     <header className="cv-header">
       {showPhoto && profilePhoto}
-      <div>
+      {showIdentity && hasIdentity && <div>
         <h1>{data.personal.firstName} <b>{data.personal.lastName}</b></h1>
         {data.personal.title && <p className="job-title">{data.personal.title}</p>}
-      </div>
+      </div>}
     </header>
   ) : null;
   const Contact = contacts.length > 0 ? <div className="contact-list">{contacts.map(([Icon, value], index) => { const ContactIcon = Icon as typeof Mail; return <span key={index}>{theme.showIcons && <ContactIcon aria-hidden="true" />}<span>{String(value)}</span></span>; })}</div> : null;
@@ -157,12 +152,16 @@ export function TemplateView({
       {isTwoColumn ? (
         <div className="two-col">
           <aside>
-            {renderHeader()}
+            {["creative", "sidebar", "studio"].includes(template)
+              ? renderHeader()
+              : ["modern", "corporate"].includes(template)
+                ? renderHeader({showIdentity:false})
+                : null}
             {Contact}
             {sideKeys.map((key) => <div key={key}>{!hidden.has(key) && content[key]}</div>)}
           </aside>
           <main>
-            {template !== "creative" && hasHeaderContent && <div className="wide-name">{renderHeader(false)}</div>}
+            {["modern", "developer", "corporate"].includes(template) && hasIdentity && <div className="wide-name">{renderHeader({showPhoto:false})}</div>}
             {Placeholder}
             {data.sectionOrder.filter((key) => !sideKeys.includes(key) && !hidden.has(key)).map((key) => <div key={key}>{content[key]}</div>)}
             {custom}
@@ -182,14 +181,3 @@ export function TemplateView({
     </div>
   );
 }
-
-export const templateDescriptions: Record<TemplateId, string> = {
-  modern: "Balanced two-column layout with an editable profile photo.",
-  professional: "Traditional business layout with an optional profile photo.",
-  minimal: "Airy, photo-free typography with generous whitespace.",
-  developer: "Photo-free, project-led layout for software and technical roles.",
-  executive: "Elegant senior-level layout with an optional profile photo.",
-  creative: "Distinctive color panel with a large editable profile photo.",
-  compact: "Photo-free, information-dense layout designed to save space.",
-  ats: "Plain photo-free single-column layout optimized for ATS parsing.",
-};
