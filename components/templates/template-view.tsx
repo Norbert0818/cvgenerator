@@ -1,5 +1,6 @@
 "use client";
 
+import { useState } from "react";
 import { Code2, Globe, Link, Mail, MapPin, Phone } from "lucide-react";
 import type { ResumeDocument, TemplateId } from "@/types/resume";
 import { sectionLabels } from "@/lib/i18n";
@@ -27,6 +28,34 @@ export const templateSupportsPhoto: Record<TemplateId, boolean> = {
 };
 
 const defaultPhotoSettings = { zoom: 1, offsetX: 0, offsetY: 0, rotation: 0 };
+
+function getPhotoGeometry(aspectRatio: number, settings: typeof defaultPhotoSettings) {
+  const safeAspectRatio = Number.isFinite(aspectRatio) && aspectRatio > 0 ? aspectRatio : 1;
+  const rotation = ((settings.rotation % 360) + 360) % 360;
+  const swapsAxes = rotation === 90 || rotation === 270;
+  const displayedAspectRatio = swapsAxes ? 1 / safeAspectRatio : safeAspectRatio;
+  const visualWidth = (displayedAspectRatio >= 1 ? displayedAspectRatio : 1) * settings.zoom * 100;
+  const visualHeight = (displayedAspectRatio >= 1 ? 1 : 1 / displayedAspectRatio) * settings.zoom * 100;
+  return {
+    imageWidth: swapsAxes ? visualHeight : visualWidth,
+    imageHeight: swapsAxes ? visualWidth : visualHeight,
+  };
+}
+
+function ProfilePhoto({src,alt,size,shape,settings}:{src:string;alt:string;size:number;shape:ResumeDocument["theme"]["photoShape"];settings:typeof defaultPhotoSettings}) {
+  const [aspectRatio,setAspectRatio]=useState(1);
+  const geometry=getPhotoGeometry(aspectRatio,settings);
+  const borderRadius=shape==="circle"?"50%":shape==="rounded"?"16px":"0";
+  return <span className={`profile-photo-frame shape-${shape}`} style={{position:"relative",width:`${size}px`,height:`${size}px`,display:"block",overflow:"hidden",flex:"0 0 auto",background:"#e5e7eb",borderRadius}}>
+    <img
+      src={src}
+      alt={alt}
+      className="profile-photo-image"
+      onLoad={event=>setAspectRatio(event.currentTarget.naturalWidth/event.currentTarget.naturalHeight)}
+      style={{position:"absolute",display:"block",left:`calc(50% + ${settings.offsetX}%)`,top:`calc(50% + ${settings.offsetY}%)`,width:`${geometry.imageWidth}%`,height:`${geometry.imageHeight}%`,maxWidth:"none",objectFit:"fill",transformOrigin:"center",transform:`translate(-50%, -50%) rotate(${settings.rotation}deg)`,pointerEvents:"none"}}
+    />
+  </span>;
+}
 
 function Dates({ start, end, current }: { start: string; end: string; current?: boolean }) {
   return (
@@ -104,22 +133,14 @@ export function TemplateView({
   const isTwoColumn = ["modern", "creative", "developer"].includes(template);
   const photoSettings = data.personal.profileImageSettings ?? defaultPhotoSettings;
   const photoVisible = Boolean(data.personal.profileImage && templateSupportsPhoto[template]);
+  const photoSize = template === "creative" ? 140 : 92;
   const profilePhoto = photoVisible ? (
-    <span className={`profile-photo-frame shape-${theme.photoShape}`}>
-      <img
-        src={data.personal.profileImage}
-        alt={`${data.personal.firstName} ${data.personal.lastName}`.trim() || "Profile"}
-        className="profile-photo-image"
-        style={{
-          transform: `translate(${photoSettings.offsetX}%, ${photoSettings.offsetY}%) scale(${photoSettings.zoom}) rotate(${photoSettings.rotation}deg)`,
-        }}
-      />
-    </span>
+    <ProfilePhoto src={data.personal.profileImage!} alt={`${data.personal.firstName} ${data.personal.lastName}`.trim() || "Profile"} size={photoSize} shape={theme.photoShape} settings={photoSettings}/>
   ) : null;
   const hasHeaderContent = Boolean(profilePhoto || data.personal.firstName || data.personal.lastName || data.personal.title);
-  const Header = hasHeaderContent ? (
+  const renderHeader = (showPhoto = true) => hasHeaderContent ? (
     <header className="cv-header">
-      {profilePhoto}
+      {showPhoto && profilePhoto}
       <div>
         <h1>{data.personal.firstName} <b>{data.personal.lastName}</b></h1>
         {data.personal.title && <p className="job-title">{data.personal.title}</p>}
@@ -136,12 +157,12 @@ export function TemplateView({
       {isTwoColumn ? (
         <div className="two-col">
           <aside>
-            {Header}
+            {renderHeader()}
             {Contact}
             {sideKeys.map((key) => <div key={key}>{!hidden.has(key) && content[key]}</div>)}
           </aside>
           <main>
-            {template !== "creative" && Header && <div className="wide-name">{Header}</div>}
+            {template !== "creative" && hasHeaderContent && <div className="wide-name">{renderHeader(false)}</div>}
             {Placeholder}
             {data.sectionOrder.filter((key) => !sideKeys.includes(key) && !hidden.has(key)).map((key) => <div key={key}>{content[key]}</div>)}
             {custom}
@@ -149,7 +170,7 @@ export function TemplateView({
         </div>
       ) : (
         <>
-          {Header}
+          {renderHeader()}
           {Contact}
           <main>
             {Placeholder}

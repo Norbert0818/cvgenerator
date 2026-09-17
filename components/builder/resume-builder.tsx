@@ -49,7 +49,10 @@ async function prepareProfilePhoto(file: File) {
     context.fillStyle = "#ffffff";
     context.fillRect(0, 0, canvas.width, canvas.height);
     context.drawImage(image, 0, 0, canvas.width, canvas.height);
-    return canvas.toDataURL("image/jpeg", 0.84);
+    return {
+      dataUrl: canvas.toDataURL("image/jpeg", 0.84),
+      aspectRatio: image.naturalWidth / image.naturalHeight,
+    };
   } finally {
     URL.revokeObjectURL(objectUrl);
   }
@@ -86,6 +89,21 @@ async function renderEditedPhoto(
   return canvas.toDataURL("image/png");
 }
 
+function getPhotoGeometry(aspectRatio: number, settings: typeof defaultPhotoSettings) {
+  const safeAspectRatio = Number.isFinite(aspectRatio) && aspectRatio > 0 ? aspectRatio : 1;
+  const rotation = ((settings.rotation % 360) + 360) % 360;
+  const swapsAxes = rotation === 90 || rotation === 270;
+  const displayedAspectRatio = swapsAxes ? 1 / safeAspectRatio : safeAspectRatio;
+  const visualWidth = (displayedAspectRatio >= 1 ? displayedAspectRatio : 1) * settings.zoom * 100;
+  const visualHeight = (displayedAspectRatio >= 1 ? 1 : 1 / displayedAspectRatio) * settings.zoom * 100;
+  return {
+    imageWidth: swapsAxes ? visualHeight : visualWidth,
+    imageHeight: swapsAxes ? visualWidth : visualHeight,
+    maxOffsetX: Math.max(0, (visualWidth - 100) / 2),
+    maxOffsetY: Math.max(0, (visualHeight - 100) / 2),
+  };
+}
+
 function Field({label,children,wide=false}:{label:string;children:React.ReactNode;wide?:boolean}) { return <label className={`field ${wide?"wide":""}`}><span>{label}</span>{children}</label>; }
 function SortableSection({id,label,hidden,onToggle}:{id:string;label:string;hidden:boolean;onToggle:()=>void}) {
   const {attributes,listeners,setNodeRef,transform,transition}=useSortable({id});
@@ -99,7 +117,10 @@ export function ResumeBuilder() {
   const [mobileTab,setMobileTab] = useState("edit");
   const [dark,setDark] = useState(false);
   const [photoEditorOpen,setPhotoEditorOpen] = useState(false);
+  const [photoDragging,setPhotoDragging] = useState(false);
+  const [photoAspectRatio,setPhotoAspectRatio] = useState(1);
   const past = useRef<ResumeDocument[]>([]); const future = useRef<ResumeDocument[]>([]); const importRef = useRef<HTMLInputElement>(null); const photoInputRef = useRef<HTMLInputElement>(null);
+  const photoDrag = useRef<{pointerId:number;startX:number;startY:number;originX:number;originY:number}|null>(null);
   const sensors=useSensors(useSensor(PointerSensor),useSensor(KeyboardSensor,{coordinateGetter:sortableKeyboardCoordinates}));
   useEffect(()=>{ const id=window.location.pathname.split("/").pop()||"new"; const existing=getResume(id); const doc=existing||createBlankResume(); if(!existing){doc.id=id==="new"?doc.id:id;upsertResume(doc); if(id==="new") history.replaceState(null,"",`/builder/${doc.id}`);} setResume(doc); const savedLocale=localStorage.getItem("cvforge_locale") as Locale|null; if(savedLocale)setLocale(savedLocale); },[]);
   useEffect(()=>{document.documentElement.classList.toggle("dark",dark)},[dark]);
@@ -119,7 +140,8 @@ export function ResumeBuilder() {
   async function uploadProfilePhoto(file:File){
     try{
       const prepared=await prepareProfilePhoto(file);
-      change(d=>{d.data.personal.profileImage=prepared;d.data.personal.profileImageSettings={...defaultPhotoSettings}});
+      setPhotoAspectRatio(prepared.aspectRatio);
+      change(d=>{d.data.personal.profileImage=prepared.dataUrl;d.data.personal.profileImageSettings={...defaultPhotoSettings}});
       setPhotoEditorOpen(true);
     }catch(error){
       toast.error(error instanceof Error&&error.message==="too-large"?"The image can be at most 10 MB.":"Please choose a JPG, PNG or WebP image.");
@@ -134,7 +156,36 @@ export function ResumeBuilder() {
   const addEducation=()=>change(d=>d.data.education.push({id:uid(),school:"",degree:"",field:"",location:"",startDate:"",endDate:"",description:""}));
   const addProject=()=>change(d=>d.data.projects.push({id:uid(),name:"",role:"",date:"",technologies:[],description:""}));
   const photoSettings=resume.data.personal.profileImageSettings??defaultPhotoSettings;
+  const photoShapeRadius=resume.theme.photoShape==="circle"?"50%":resume.theme.photoShape==="rounded"?"18px":"0";
   const updatePhotoSetting=(key:keyof typeof defaultPhotoSettings,value:number)=>change(d=>{d.data.personal.profileImageSettings={...(d.data.personal.profileImageSettings??defaultPhotoSettings),[key]:value}});
+  const clamp=(value:number,min:number,max:number)=>Math.min(max,Math.max(min,value));
+  const photoGeometry=getPhotoGeometry(photoAspectRatio,photoSettings);
+  const updatePhotoZoom=(value:number)=>change(d=>{const current=d.data.personal.profileImageSettings??defaultPhotoSettings;const zoom=clamp(value,1,3);const next={...current,zoom};const geometry=getPhotoGeometry(photoAspectRatio,next);d.data.personal.profileImageSettings={...next,offsetX:clamp(current.offsetX,-geometry.maxOffsetX,geometry.maxOffsetX),offsetY:clamp(current.offsetY,-geometry.maxOffsetY,geometry.maxOffsetY)}});
+  const rotatePhoto=(direction:-1|1)=>change(d=>{const current=d.data.personal.profileImageSettings??defaultPhotoSettings;const rotation=((current.rotation+direction*90)%360+360)%360;const next={...current,rotation};const geometry=getPhotoGeometry(photoAspectRatio,next);d.data.personal.profileImageSettings={...next,offsetX:clamp(current.offsetX,-geometry.maxOffsetX,geometry.maxOffsetX),offsetY:clamp(current.offsetY,-geometry.maxOffsetY,geometry.maxOffsetY)}});
+  function beginPhotoDrag(event:React.PointerEvent<HTMLDivElement>){
+    if(!resume)return;
+    past.current.push(copy(resume));if(past.current.length>40)past.current.shift();future.current=[];
+    photoDrag.current={pointerId:event.pointerId,startX:event.clientX,startY:event.clientY,originX:photoSettings.offsetX,originY:photoSettings.offsetY};
+    event.currentTarget.setPointerCapture(event.pointerId);setPhotoDragging(true);
+  }
+  function movePhoto(event:React.PointerEvent<HTMLDivElement>){
+    const drag=photoDrag.current;if(!drag||drag.pointerId!==event.pointerId)return;
+    const rect=event.currentTarget.getBoundingClientRect();
+    const offsetX=clamp(drag.originX+((event.clientX-drag.startX)/rect.width)*100,-photoGeometry.maxOffsetX,photoGeometry.maxOffsetX);
+    const offsetY=clamp(drag.originY+((event.clientY-drag.startY)/rect.height)*100,-photoGeometry.maxOffsetY,photoGeometry.maxOffsetY);
+    setResume(current=>{if(!current)return current;const next=copy(current);next.data.personal.profileImageSettings={...(next.data.personal.profileImageSettings??defaultPhotoSettings),offsetX,offsetY};return next});
+  }
+  function endPhotoDrag(event:React.PointerEvent<HTMLDivElement>){
+    if(photoDrag.current?.pointerId===event.pointerId)photoDrag.current=null;
+    if(event.currentTarget.hasPointerCapture(event.pointerId))event.currentTarget.releasePointerCapture(event.pointerId);
+    setPhotoDragging(false);
+  }
+  function rememberPhotoAspectRatio(event:React.SyntheticEvent<HTMLImageElement>){
+    const aspectRatio=event.currentTarget.naturalWidth/event.currentTarget.naturalHeight;
+    if(!Number.isFinite(aspectRatio)||aspectRatio<=0)return;
+    setPhotoAspectRatio(aspectRatio);
+    setResume(current=>{if(!current)return current;const settings=current.data.personal.profileImageSettings??defaultPhotoSettings;const geometry=getPhotoGeometry(aspectRatio,settings);const offsetX=clamp(settings.offsetX,-geometry.maxOffsetX,geometry.maxOffsetX);const offsetY=clamp(settings.offsetY,-geometry.maxOffsetY,geometry.maxOffsetY);if(offsetX===settings.offsetX&&offsetY===settings.offsetY)return current;const next=copy(current);next.data.personal.profileImageSettings={...settings,offsetX,offsetY};return next});
+  }
 
   const Editor=<div className="editor-panel">
     <div className="editor-intro"><div><span className="eyebrow">CV content</span><h2>{tr.edit}</h2></div><Button variant="outline" size="sm" onClick={()=>{const fresh=createBlankResume(resume.template);change(d=>Object.assign(d,{data:fresh.data}));}}>{tr.clear}</Button></div>
@@ -142,13 +193,13 @@ export function ResumeBuilder() {
       <AccordionItem value="personal"><AccordionTrigger>{tr.personal}</AccordionTrigger><AccordionContent><div className="form-grid">
         <Field label="First name"><Input value={resume.data.personal.firstName} onChange={e=>setPersonal("firstName",e.target.value)}/></Field><Field label="Last name"><Input value={resume.data.personal.lastName} onChange={e=>setPersonal("lastName",e.target.value)}/></Field>
         <Field label="Professional title" wide><Input value={resume.data.personal.title} onChange={e=>setPersonal("title",e.target.value)}/></Field><Field label="Email"><Input type="email" value={resume.data.personal.email} onChange={e=>setPersonal("email",e.target.value)}/></Field><Field label="Phone"><Input value={resume.data.personal.phone} onChange={e=>setPersonal("phone",e.target.value)}/></Field><Field label="Location" wide><Input value={resume.data.personal.location} onChange={e=>setPersonal("location",e.target.value)}/></Field><Field label="LinkedIn"><Input value={resume.data.personal.linkedin||""} onChange={e=>setPersonal("linkedin",e.target.value)}/></Field><Field label="GitHub"><Input value={resume.data.personal.github||""} onChange={e=>setPersonal("github",e.target.value)}/></Field><Field label="Portfolio" wide><Input value={resume.data.personal.portfolio||""} onChange={e=>setPersonal("portfolio",e.target.value)}/></Field>
-        <div className="photo-upload-card">
+        <div className="photo-upload-card" style={{gridColumn:"1 / -1",display:"grid",gridTemplateColumns:"auto minmax(0, 1fr)",alignItems:"center",gap:"16px",padding:"16px",border:"1px dashed var(--border)",borderRadius:"14px"}}>
           <input ref={photoInputRef} type="file" accept="image/png,image/jpeg,image/webp" hidden onChange={e=>{const file=e.target.files?.[0];if(file)void uploadProfilePhoto(file)}}/>
           {resume.data.personal.profileImage?<>
-            <span className={`photo-upload-preview shape-${resume.theme.photoShape}`}><img src={resume.data.personal.profileImage} alt="Current profile" style={{transform:`translate(${(resume.data.personal.profileImageSettings??defaultPhotoSettings).offsetX}%, ${(resume.data.personal.profileImageSettings??defaultPhotoSettings).offsetY}%) scale(${(resume.data.personal.profileImageSettings??defaultPhotoSettings).zoom}) rotate(${(resume.data.personal.profileImageSettings??defaultPhotoSettings).rotation}deg)`}}/></span>
+            <span className={`photo-upload-preview shape-${resume.theme.photoShape}`} style={{position:"relative",width:"82px",height:"82px",display:"block",overflow:"hidden",background:"#e8ebf0",borderRadius:photoShapeRadius}}><img src={resume.data.personal.profileImage} alt="Current profile" onLoad={rememberPhotoAspectRatio} style={{position:"absolute",display:"block",left:`calc(50% + ${photoSettings.offsetX}%)`,top:`calc(50% + ${photoSettings.offsetY}%)`,width:`${photoGeometry.imageWidth}%`,height:`${photoGeometry.imageHeight}%`,maxWidth:"none",objectFit:"fill",transformOrigin:"center",transform:`translate(-50%, -50%) rotate(${photoSettings.rotation}deg)`}}/></span>
             <div><strong>Profile photo</strong><p>Crop, zoom and position the photo before it appears in supported templates.</p><div className="photo-upload-actions"><Button type="button" variant="outline" size="sm" onClick={()=>setPhotoEditorOpen(true)}>Edit photo</Button><Button type="button" variant="outline" size="sm" onClick={()=>photoInputRef.current?.click()}>Replace</Button><Button type="button" variant="ghost" size="sm" onClick={()=>change(d=>{delete d.data.personal.profileImage;delete d.data.personal.profileImageSettings})}>Remove</Button></div></div>
           </>:<>
-            <span className="photo-upload-icon"><ImagePlus/></span>
+            <span className="photo-upload-icon" style={{width:"82px",height:"82px",display:"grid",placeItems:"center",overflow:"hidden",background:"#e8eef9",color:"#2563eb",borderRadius:"16px"}}><ImagePlus/></span>
             <div><strong>Add a profile photo</strong><p>JPG, PNG or WebP, up to 10 MB. The image is resized before local saving.</p><Button type="button" variant="outline" size="sm" onClick={()=>photoInputRef.current?.click()}><Upload/>Choose image</Button></div>
           </>}
         </div>
@@ -167,7 +218,72 @@ export function ResumeBuilder() {
   </div>;
 
   return <div className={`builder-shell ${dark?"dark-ui":""}`}><Toaster richColors/>
-    <Dialog open={photoEditorOpen} onOpenChange={setPhotoEditorOpen}><DialogContent className="photo-editor-dialog"><DialogHeader><DialogTitle>Edit profile photo</DialogTitle><DialogDescription>Move and zoom the image until the crop looks right. Changes are saved automatically.</DialogDescription></DialogHeader>{resume.data.personal.profileImage&&<div className="photo-editor-layout"><div className={`photo-editor-preview shape-${resume.theme.photoShape}`}><img src={resume.data.personal.profileImage} alt="Profile crop preview" style={{transform:`translate(${photoSettings.offsetX}%, ${photoSettings.offsetY}%) scale(${photoSettings.zoom}) rotate(${photoSettings.rotation}deg)`}}/></div><div className="photo-editor-controls"><Field label={`Zoom · ${photoSettings.zoom.toFixed(2)}×`} wide><Input type="range" min="1" max="3" step="0.05" value={photoSettings.zoom} onChange={e=>updatePhotoSetting("zoom",Number(e.target.value))}/></Field><Field label="Horizontal position" wide><Input type="range" min="-50" max="50" step="1" value={photoSettings.offsetX} onChange={e=>updatePhotoSetting("offsetX",Number(e.target.value))}/></Field><Field label="Vertical position" wide><Input type="range" min="-50" max="50" step="1" value={photoSettings.offsetY} onChange={e=>updatePhotoSetting("offsetY",Number(e.target.value))}/></Field><Field label="Photo shape" wide><select className="native-control" value={resume.theme.photoShape} onChange={e=>change(d=>{d.theme.photoShape=e.target.value as typeof d.theme.photoShape})}><option value="circle">Circle</option><option value="rounded">Rounded</option><option value="square">Square</option></select></Field><div className="photo-rotate-actions"><Button type="button" variant="outline" onClick={()=>updatePhotoSetting("rotation",photoSettings.rotation-90)}><RotateCcw/>Rotate left</Button><Button type="button" variant="outline" onClick={()=>updatePhotoSetting("rotation",photoSettings.rotation+90)}><RotateCw/>Rotate right</Button></div><Button type="button" variant="ghost" onClick={()=>change(d=>{d.data.personal.profileImageSettings={...defaultPhotoSettings}})}>Reset crop</Button></div></div>}</DialogContent></Dialog>
+    <Dialog open={photoEditorOpen} onOpenChange={setPhotoEditorOpen}>
+      <DialogContent
+        className="photo-editor-dialog"
+        style={{width:"min(92vw, 560px)",maxWidth:"560px",maxHeight:"92vh",overflowY:"auto"}}
+      >
+        <DialogHeader>
+          <DialogTitle>Edit profile photo</DialogTitle>
+          <DialogDescription>Drag the image to position it. Use the controls to zoom, rotate and change the crop shape.</DialogDescription>
+        </DialogHeader>
+        {resume.data.personal.profileImage&&<div className="photo-editor-layout" style={{display:"grid",gridTemplateColumns:"minmax(0, 1fr)",gap:"16px",minWidth:0}}>
+          <div
+            className={`photo-editor-preview shape-${resume.theme.photoShape}`}
+            onPointerDown={beginPhotoDrag}
+            onPointerMove={movePhoto}
+            onPointerUp={endPhotoDrag}
+            onPointerCancel={endPhotoDrag}
+            onLostPointerCapture={()=>{photoDrag.current=null;setPhotoDragging(false)}}
+            onWheel={event=>{event.preventDefault();updatePhotoZoom(photoSettings.zoom+(event.deltaY<0?0.08:-0.08))}}
+            style={{
+              position:"relative",
+              width:"min(320px, 72vw)",
+              height:"min(320px, 72vw)",
+              maxWidth:"100%",
+              overflow:"hidden",
+              margin:"0 auto",
+              background:"#e8ebf0",
+              borderRadius:photoShapeRadius,
+              touchAction:"none",
+              cursor:photoDragging?"grabbing":"grab",
+              userSelect:"none",
+              boxShadow:"inset 0 0 0 1px rgba(0,0,0,.08)",
+            }}
+          >
+            <img
+              src={resume.data.personal.profileImage}
+              alt="Profile crop preview"
+              draggable={false}
+              onLoad={rememberPhotoAspectRatio}
+              style={{
+                position:"absolute",
+                display:"block",
+                left:`calc(50% + ${photoSettings.offsetX}%)`,
+                top:`calc(50% + ${photoSettings.offsetY}%)`,
+                width:`${photoGeometry.imageWidth}%`,
+                height:`${photoGeometry.imageHeight}%`,
+                maxWidth:"none",
+                objectFit:"fill",
+                transformOrigin:"center",
+                transform:`translate(-50%, -50%) rotate(${photoSettings.rotation}deg)`,
+                pointerEvents:"none",
+              }}
+            />
+            <span aria-hidden style={{position:"absolute",inset:0,border:"2px solid rgba(255,255,255,.9)",borderRadius:photoShapeRadius,pointerEvents:"none",boxShadow:"inset 0 0 0 1px rgba(0,0,0,.15)"}}/>
+          </div>
+          <p style={{margin:"-4px 0 0",textAlign:"center",fontSize:"12px",color:"var(--muted-foreground)"}}>Drag the photo directly, or fine-tune it with the sliders.</p>
+          <div className="photo-editor-controls" style={{display:"grid",gap:"14px",minWidth:0}}>
+            <Field label={`Zoom · ${photoSettings.zoom.toFixed(2)}×`} wide><Input style={{width:"100%"}} type="range" min="1" max="3" step="0.05" value={photoSettings.zoom} onChange={e=>updatePhotoZoom(Number(e.target.value))}/></Field>
+            <Field label={`Horizontal position · ${Math.round(photoSettings.offsetX)}`} wide><Input style={{width:"100%"}} type="range" min={-photoGeometry.maxOffsetX} max={photoGeometry.maxOffsetX} step="1" disabled={photoGeometry.maxOffsetX<1} value={photoSettings.offsetX} onChange={e=>updatePhotoSetting("offsetX",Number(e.target.value))}/></Field>
+            <Field label={`Vertical position · ${Math.round(photoSettings.offsetY)}`} wide><Input style={{width:"100%"}} type="range" min={-photoGeometry.maxOffsetY} max={photoGeometry.maxOffsetY} step="1" disabled={photoGeometry.maxOffsetY<1} value={photoSettings.offsetY} onChange={e=>updatePhotoSetting("offsetY",Number(e.target.value))}/></Field>
+            <Field label="Photo shape" wide><select className="native-control" value={resume.theme.photoShape} onChange={e=>change(d=>{d.theme.photoShape=e.target.value as typeof d.theme.photoShape})}><option value="circle">Circle</option><option value="rounded">Rounded</option><option value="square">Square</option></select></Field>
+            <div className="photo-rotate-actions" style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:"8px"}}><Button type="button" variant="outline" onClick={()=>rotatePhoto(-1)}><RotateCcw/>Rotate left</Button><Button type="button" variant="outline" onClick={()=>rotatePhoto(1)}><RotateCw/>Rotate right</Button></div>
+            <div style={{display:"flex",justifyContent:"space-between",gap:"8px",flexWrap:"wrap"}}><Button type="button" variant="ghost" onClick={()=>change(d=>{d.data.personal.profileImageSettings={...defaultPhotoSettings}})}>Reset crop</Button><Button type="button" onClick={()=>setPhotoEditorOpen(false)}>Done</Button></div>
+          </div>
+        </div>}
+      </DialogContent>
+    </Dialog>
     <header className="builder-topbar"><div className="topbar-left"><Button asChild variant="ghost" size="icon"><Link href="/dashboard" aria-label={tr.back}><ArrowLeft/></Link></Button><div><Input className="cv-name" value={resume.name} onChange={e=>change(d=>{d.name=e.target.value})}/><span className="save-state">{saveState==="saved"?<><Check/>{tr.saved}</>:tr.saving}</span></div></div><div className="topbar-actions"><Button variant="ghost" size="icon" onClick={undo} disabled={!past.current.length}><Undo2/></Button><Button variant="ghost" size="icon" onClick={redo} disabled={!future.current.length}><Redo2/></Button>
       <Select value={locale} onValueChange={v=>{setLocale(v as Locale);localStorage.setItem("cvforge_locale",v)}}><SelectTrigger className="lang-select"><SelectValue/></SelectTrigger><SelectContent><SelectItem value="en">EN</SelectItem><SelectItem value="ro">RO</SelectItem><SelectItem value="hu">HU</SelectItem></SelectContent></Select>
       <Button variant="ghost" size="icon" onClick={()=>setDark(v=>!v)}>{dark?<Sun/>:<Moon/>}</Button>
