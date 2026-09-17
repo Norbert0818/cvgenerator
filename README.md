@@ -2,6 +2,21 @@
 
 A clean full-stack starter running on [vinext](https://github.com/cloudflare/vinext), with optional Cloudflare D1 and Drizzle support.
 
+## CVForge gyorsindítás
+
+1. Telepítsd a Node.js 22.13 vagy újabb verzióját.
+2. A projekt mappájában futtasd:
+
+```sh
+corepack enable
+corepack install
+pnpm install
+pnpm dev
+```
+
+Ezután nyisd meg a terminálban megjelenő helyi címet (általában
+`http://localhost:5173`). A CV adatai a böngésző helyi tárhelyére mentődnek.
+
 ## Prerequisites
 
 - Node.js `>=22.13.0`

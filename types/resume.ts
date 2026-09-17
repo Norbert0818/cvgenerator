@@ -1,10 +1,18 @@
 export type Locale = "en" | "ro" | "hu";
 export type TemplateId = "modern" | "professional" | "minimal" | "developer" | "executive" | "creative" | "compact" | "ats";
 
+export interface ProfileImageSettings {
+  zoom: number;
+  offsetX: number;
+  offsetY: number;
+  rotation: number;
+}
+
 export interface PersonalInfo {
   firstName: string; lastName: string; title: string; email: string; phone: string;
   location: string; website?: string; linkedin?: string; github?: string; portfolio?: string;
   drivingLicence?: string; dateOfBirth?: string; nationality?: string; profileImage?: string;
+  profileImageSettings?: ProfileImageSettings;
 }
 export interface Experience { id: string; jobTitle: string; company: string; location: string; startDate: string; endDate: string; current: boolean; description: string; achievements: string[]; }
 export interface Education { id: string; school: string; degree: string; field: string; location: string; startDate: string; endDate: string; description: string; grade?: string; }
